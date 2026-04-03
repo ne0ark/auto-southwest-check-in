@@ -4,7 +4,7 @@ are set, errors are handled, and integration with the webdriver works.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from multiprocessing import Lock
 from unittest import mock
 
@@ -57,12 +57,17 @@ def test_flight_is_scheduled_checks_in_and_departs(
     requests_mock: RequestMocker, mocker: MockerFixture
 ) -> None:
     tz_data = {"LAX": "America/Los_Angeles"}
-
     mocker.patch("pathlib.Path.read_text", return_value=json.dumps(tz_data))
-    mocker.patch("lib.reservation_monitor.get_current_time", return_value=datetime(2020, 10, 5))
+
+    current_utc_time = datetime(2020, 10, 5, 18, 29, tzinfo=timezone.utc)
+    mocker.patch("lib.reservation_monitor.get_current_time", return_value=current_utc_time)
+
     mock_process = mocker.patch("lib.checkin_handler.Process").return_value
     mock_new_flights_notification = mocker.patch(
         "lib.notification_handler.NotificationHandler.new_flights"
+    )
+    mock_reaccommodated_flights_notification = mocker.patch(
+        "lib.notification_handler.NotificationHandler.reaccommodated_flights"
     )
     mocker.patch("os.kill")
     mock_sleep = mocker.patch("time.sleep")
@@ -75,8 +80,7 @@ def test_flight_is_scheduled_checks_in_and_departs(
         [{"confirmationNumber": "TEST", "firstName": "Berkant", "lastName": "Marika"}]
     )
 
-    def mock_get_driver(self) -> mock.Mock:
-        # pylint: disable-next=protected-access
+    def mock_get_driver(self: WebDriver) -> mock.Mock:
         self.checkin_scheduler.headers = self._get_needed_headers(ALL_HEADERS)
         self.headers_set = True
         return mocker.patch("lib.webdriver.Driver")
@@ -94,6 +98,7 @@ def test_flight_is_scheduled_checks_in_and_departs(
                     "flights": [{"number": "WN100"}, {"number": "WN101"}],
                 },
             ],
+            "_links": {"reaccom": None},
         }
     }
 
@@ -101,7 +106,7 @@ def test_flight_is_scheduled_checks_in_and_departs(
     # a full round-trip flight)
     mocker.patch(
         "lib.checkin_scheduler.get_current_time",
-        side_effect=[datetime(2020, 10, 5, 18, 29), datetime(2020, 10, 14, 18, 29)],
+        side_effect=[current_utc_time, datetime(2020, 10, 14, 18, 29, tzinfo=timezone.utc)],
     )
 
     requests_mock.post(
@@ -120,6 +125,7 @@ def test_flight_is_scheduled_checks_in_and_departs(
     # Ensure the flight was scheduled correctly
     mock_process.start.assert_called_once()
     assert mock_new_flights_notification.call_count == 2
+    assert mock_reaccommodated_flights_notification.call_count == 2
 
     # Ensure the flight was removed after it departed
     assert len(scheduler.checkin_handlers) == 0
@@ -138,8 +144,9 @@ def test_account_schedules_new_flights(requests_mock: RequestMocker, mocker: Moc
     tz_data = {"LAX": "America/Los_Angeles", "SYD": "Australia/Sydney"}
     mocker.patch("pathlib.Path.read_text", return_value=json.dumps(tz_data))
 
-    mocker.patch("lib.reservation_monitor.get_current_time", return_value=datetime(2020, 10, 10))
-    mocker.patch("lib.checkin_scheduler.get_current_time", return_value=datetime(2020, 10, 10))
+    current_utc_time = datetime(2020, 10, 10, tzinfo=timezone.utc)
+    mocker.patch("lib.reservation_monitor.get_current_time", return_value=current_utc_time)
+    mocker.patch("lib.checkin_scheduler.get_current_time", return_value=current_utc_time)
     mocker.patch("lib.webdriver.seleniumbase_actions.wait_for_element_not_visible")
     mock_process = mocker.patch("lib.checkin_handler.Process").return_value
     # Raise a StopIteration to prevent an infinite loop
@@ -154,17 +161,11 @@ def test_account_schedules_new_flights(requests_mock: RequestMocker, mocker: Moc
             '"customers.userInformation.lastName": "Gump"}'
         )
     }
-
-    trips_response = {
-        "body": (
-            '{"upcomingTripsPage": [{"tripType": "FLIGHT", "confirmationNumber": "TEST"}, '
-            '{"tripType": "CAR"}]}'
-        )
-    }
+    trips_response = {"body": ('{"data": [{"record_locator": "TEST"}]}')}
 
     login_attempts = 0
 
-    def mock_get_driver(self) -> mock.Mock:
+    def mock_get_driver(self: WebDriver) -> mock.Mock:
         """
         Adds login and trips responses. The second login request will be a 429 to test
         that the error is handled correctly.
@@ -172,7 +173,6 @@ def test_account_schedules_new_flights(requests_mock: RequestMocker, mocker: Moc
         nonlocal login_attempts
         login_attempts += 1
 
-        # pylint: disable-next=protected-access
         self.checkin_scheduler.headers = self._get_needed_headers(ALL_HEADERS)
         self.headers_set = True
 
@@ -209,6 +209,7 @@ def test_account_schedules_new_flights(requests_mock: RequestMocker, mocker: Moc
                     "flights": [{"number": "WN101"}],
                 },
             ],
+            "_links": {"reaccom": None},
         }
     }
 

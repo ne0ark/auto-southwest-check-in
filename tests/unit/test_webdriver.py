@@ -1,16 +1,18 @@
-import os
 import sys
-from typing import Any, Dict
+from typing import Any
 from unittest import mock
 
 import pytest
 from pytest_mock import MockerFixture
 
 from lib.utils import DriverTimeoutError, LoginError
-from lib.webdriver import HEADERS_URL, INVALID_CREDENTIALS_CODE, LOGIN_URL, TRIPS_URL, WebDriver
-
-# This needs to be accessed to be tested
-# pylint: disable=protected-access
+from lib.webdriver import (
+    INVALID_CREDENTIALS_CODE,
+    MOBILE_HEADERS_URL,
+    SUCCESSFUL_LOGIN_URL,
+    TRIPS_URL,
+    WebDriver,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -28,11 +30,10 @@ class TestWebDriver:
     def _set_up_webdriver(self, mocker: MockerFixture) -> None:
         mock_checkin_scheduler = mocker.patch("lib.checkin_scheduler.CheckInScheduler")
         mock_checkin_scheduler.headers = {}
-        # pylint: disable=attribute-defined-outside-init
         self.driver = WebDriver(mock_checkin_scheduler)
 
     @pytest.mark.parametrize(
-        ["arg", "take_screenshots"], [("--debug-screenshots", True), ("--no-screenshots", False)]
+        ("arg", "take_screenshots"), [("--debug-screenshots", True), ("--no-screenshots", False)]
     )
     def test_should_take_screenshots_detects_debug_screenshots_argument(
         self, arg: str, take_screenshots: bool
@@ -45,7 +46,7 @@ class TestWebDriver:
         self.driver._take_debug_screenshot(mock_chrome, "test-shot.png")
 
         mock_chrome.save_screenshot.assert_called_once()
-        assert "test-shot.png" in mock_chrome.save_screenshot.call_args[0][0]
+        assert mock_chrome.save_screenshot.call_args[0][0].name == "test-shot.png"
 
     def test_set_headers_correctly_sets_needed_headers(
         self, mocker: MockerFixture, mock_chrome: mock.Mock
@@ -55,14 +56,13 @@ class TestWebDriver:
 
         self.driver.set_headers()
 
-        mock_wait_for_attribute.assert_called_once_with("headers_set")
+        mock_wait_for_attribute.assert_called_once_with(mock_chrome, "headers_set")
         mock_chrome.quit.assert_called_once()
 
     def test_get_reservations_fetches_reservations(
         self, mocker: MockerFixture, mock_chrome: mock.Mock, mock_account_monitor: mock.Mock
     ) -> None:
         mocker.patch("time.sleep")
-        mocker.patch("lib.webdriver.seleniumbase_actions.wait_for_element_not_visible")
         mocker.patch.object(WebDriver, "_get_driver", return_value=mock_chrome)
         mock_wait_for_attribute = mocker.patch.object(self.driver, "_wait_for_attribute")
         mock_wait_for_login = mocker.patch.object(WebDriver, "_wait_for_login")
@@ -75,28 +75,37 @@ class TestWebDriver:
         mock_wait_for_attribute.assert_called_once()
         mock_wait_for_login.assert_called_once()
         mock_chrome.add_cdp_listener.assert_called_once()
+        # Ensure the driver navigates to the normal website to fetch reservations
+        mock_chrome.get.assert_called_once()
         mock_chrome.quit.assert_called_once()
 
     def test_get_driver_returns_a_webdriver_with_one_request(self, mock_chrome: mock.Mock) -> None:
         driver = self.driver._get_driver()
         driver.add_cdp_listener.assert_called_once()
-        driver.open.assert_called_once()
+        driver.get.assert_called_once()
 
         assert mock_chrome.call_args.kwargs.get("driver_version") == "mlatest"
 
-    def test_get_driver_keeps_driver_version_in_docker(self, mock_chrome: mock.Mock) -> None:
-        # This env variable will be set in the Docker image
-        os.environ["AUTO_SOUTHWEST_CHECK_IN_DOCKER"] = "1"
+    def test_get_driver_keeps_is_correctly_configured_in_docker(
+        self, mocker: MockerFixture, mock_chrome: mock.Mock
+    ) -> None:
+        """The driver version should be kept and the virtual display should be started"""
+
+        # This variable will be set in the Docker image
+        mocker.patch("lib.webdriver.IS_DOCKER", True)
+
+        mock_start_display = mocker.patch.object(self.driver, "_start_display")
 
         driver = self.driver._get_driver()
         driver.add_cdp_listener.assert_called_once()
-        driver.open.assert_called_once()
+        driver.get.assert_called_once()
 
         assert mock_chrome.call_args.kwargs.get("driver_version") == "keep"
+        mock_start_display.assert_called_once()
 
     def test_headers_listener_sets_headers_when_correct_url(self, mocker: MockerFixture) -> None:
         mocker.patch.object(self.driver, "_get_needed_headers", return_value={"test": "headers"})
-        data = {"params": {"request": {"url": HEADERS_URL, "headers": {}}}}
+        data = {"params": {"request": {"url": MOBILE_HEADERS_URL, "headers": {}}}}
 
         self.driver._headers_listener(data)
 
@@ -111,7 +120,12 @@ class TestWebDriver:
         assert self.driver.checkin_scheduler.headers == {}
 
     def test_login_listener_sets_login_information(self) -> None:
-        data = {"params": {"response": {"url": LOGIN_URL, "status": 200}, "requestId": "test_id"}}
+        data = {
+            "params": {
+                "response": {"url": SUCCESSFUL_LOGIN_URL, "status": 200},
+                "requestId": "test_id",
+            }
+        }
         self.driver._login_listener(data)
 
         assert self.driver.login_status_code == 200
@@ -131,7 +145,9 @@ class TestWebDriver:
         assert self.driver.login_request_id is None
         assert self.driver.trips_request_id is None
 
-    def test_wait_for_attribute_waits_for_attribute_to_be_set(self, mocker: MockerFixture) -> None:
+    def test_wait_for_attribute_waits_for_attribute_to_be_set(
+        self, mocker: MockerFixture, mock_chrome: mock.Mock
+    ) -> None:
         call_count = 0
 
         def mock_sleep(_: int) -> None:
@@ -142,13 +158,17 @@ class TestWebDriver:
 
         mocker.patch("time.sleep", side_effect=mock_sleep)
 
-        self.driver._wait_for_attribute("headers_set")
+        self.driver._wait_for_attribute(mock_chrome, "headers_set")
         assert call_count == 2
 
-    def test_wait_for_attribute_raises_error_on_timeout(self, mocker: MockerFixture) -> None:
+    def test_wait_for_attribute_raises_error_on_timeout(
+        self, mocker: MockerFixture, mock_chrome: mock.Mock
+    ) -> None:
         mocker.patch("time.sleep")
         with pytest.raises(DriverTimeoutError):
-            self.driver._wait_for_attribute("headers_set")
+            self.driver._wait_for_attribute(mock_chrome, "headers_set")
+
+        mock_chrome.quit.assert_called_once()
 
     def test_wait_for_login_raises_error_on_failed_login(
         self, mocker: MockerFixture, mock_chrome: mock.Mock
@@ -182,39 +202,41 @@ class TestWebDriver:
     ) -> None:
         mocker.patch("seleniumbase.fixtures.page_actions.wait_for_element_not_visible")
         mocker.patch.object(mock_chrome, "is_element_visible", return_value=False)
+
         self.driver._click_login_button(mock_chrome)
         mock_chrome.click.assert_not_called()
 
-    def test_click_login_button_does_not_click_when_popup_appears(
+    def test_click_login_button_does_not_click_after_failed_login(
         self, mocker: MockerFixture, mock_chrome: mock.Mock
     ) -> None:
+        # Simulate an error message being visible after logging in
         mock_wait_for_element = mocker.patch(
             "seleniumbase.fixtures.page_actions.wait_for_element_not_visible"
         )
         mocker.patch.object(mock_chrome, "is_element_visible", return_value=True)
+
         self.driver._click_login_button(mock_chrome)
-        mock_wait_for_element.assert_called_once()
+        mock_wait_for_element.assert_not_called()
+        mock_chrome.click.assert_not_called()
 
     def test_click_login_button_clicks_when_form_fails_to_submit(
         self, mocker: MockerFixture, mock_chrome: mock.Mock
     ) -> None:
         mocker.patch(
-            "seleniumbase.fixtures.page_actions.wait_for_element_not_visible",
-            side_effect=[None, Exception],
+            "seleniumbase.fixtures.page_actions.wait_for_element_not_visible", side_effect=Exception
         )
         mocker.patch.object(mock_chrome, "is_element_visible", return_value=False)
+
         self.driver._click_login_button(mock_chrome)
         mock_chrome.click.assert_called_once()
 
-    def test_fetch_reservations_fetches_only_flight_reservations(
-        self, mocker: MockerFixture
-    ) -> None:
-        trips_response = {"upcomingTripsPage": [{"tripType": "FLIGHT"}, {"tripType": "CAR"}]}
+    def test_fetch_reservations_fetches_flight_reservations(self, mocker: MockerFixture) -> None:
+        trips_response = {"data": ["flight1", "flight2"]}
 
         mocker.patch.object(WebDriver, "_wait_for_attribute")
         mocker.patch.object(WebDriver, "_get_response_body", return_value=trips_response)
 
-        assert self.driver._fetch_reservations(None) == [{"tripType": "FLIGHT"}]
+        assert self.driver._fetch_reservations(None) == ["flight1", "flight2"]
 
     def test_get_response_body_loads_body_from_response(self, mock_chrome: mock.Mock) -> None:
         mock_chrome.execute_cdp_cmd.return_value = {"body": '{"response": "body"}'}
@@ -236,7 +258,7 @@ class TestWebDriver:
         assert "Status code: 429" in str(error)
 
     @pytest.mark.parametrize(
-        ["original_headers", "expected_headers"],
+        ("original_headers", "expected_headers"),
         [
             ({"unnecessary": "header"}, {}),
             ({"X-API-Key": "API Key"}, {"X-API-Key": "API Key"}),
@@ -246,7 +268,7 @@ class TestWebDriver:
         ],
     )
     def test_get_needed_headers_returns_matching_headers(
-        self, original_headers: Dict[str, Any], expected_headers: Dict[str, Any]
+        self, original_headers: dict[str, Any], expected_headers: dict[str, Any]
     ) -> None:
         headers = self.driver._get_needed_headers(original_headers)
         assert headers == expected_headers
@@ -272,3 +294,59 @@ class TestWebDriver:
 
         assert mock_account_monitor.first_name == "John"
         assert mock_account_monitor.last_name == "Doe"
+
+    def test_set_account_name_sets_the_preferred_first_name_when_available(
+        self, mock_account_monitor: mock.Mock
+    ) -> None:
+        mock_account_monitor.first_name = None
+        self.driver._set_account_name(
+            mock_account_monitor,
+            {
+                "customers.userInformation.firstName": "John",
+                "customers.userInformation.lastName": "Doe",
+                "customers.userInformation.preferredName": "Johnny",
+            },
+        )
+
+        assert mock_account_monitor.first_name == "Johnny"
+        assert mock_account_monitor.last_name == "Doe"
+
+    def test_quit_driver_cleans_up_webdriver(
+        self, mocker: MockerFixture, mock_chrome: mock.Mock
+    ) -> None:
+        mock_stop_display = mocker.patch.object(self.driver, "_stop_display")
+        self.driver._quit_driver(mock_chrome)
+
+        mock_chrome.quit.assert_called_once()
+        mock_stop_display.assert_called_once()
+
+    # Make sure start_display handles the virtual display both being alive and not
+    @pytest.mark.parametrize("is_alive", [True, False])
+    def test_start_display_starts_virtual_display(
+        self, mocker: MockerFixture, is_alive: bool
+    ) -> None:
+        mock_display = mocker.patch("lib.webdriver.Display")
+        mock_display.return_value.is_alive.return_value = is_alive
+
+        self.driver._start_display()
+        mock_display.assert_called_once()
+
+    def test_start_display_ignores_error_when_display_fails_to_start(
+        self, mocker: MockerFixture
+    ) -> None:
+        mocker.patch("lib.webdriver.Display", side_effect=Exception)
+        self.driver._start_display()
+
+    def test_stop_display_stops_virtual_display(self, mocker: MockerFixture) -> None:
+        mock_display = mocker.patch("lib.webdriver.Display")
+        self.driver.display = mock_display
+
+        self.driver._stop_display()
+        mock_display.stop.assert_called_once()
+
+    def test_stop_display_ignores_if_display_is_not_set(self, mocker: MockerFixture) -> None:
+        mock_display = mocker.patch("lib.webdriver.Display")
+        self.driver.display = None
+
+        self.driver._stop_display()
+        mock_display.stop.assert_not_called()

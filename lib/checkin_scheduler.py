@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from .checkin_handler import CheckInHandler
 from .flight import Flight
 from .log import get_logger
-from .utils import RequestError, get_current_time, make_request
+from .utils import RequestError, SouthwestErrorCode, get_current_time, make_request
 from .webdriver import WebDriver
 
 if TYPE_CHECKING:
@@ -14,8 +14,6 @@ if TYPE_CHECKING:
 
 VIEW_RESERVATION_URL = "mobile-air-booking/v1/mobile-air-booking/page/view-reservation/"
 logger = get_logger(__name__)
-
-FLIGHT_IN_PAST_CODE = 400520413
 
 
 class CheckInScheduler:
@@ -32,7 +30,7 @@ class CheckInScheduler:
         self.flights = []
         self.checkin_handlers = []
 
-    def process_reservations(self, confirmation_numbers: List[str]) -> None:
+    def process_reservations(self, confirmation_numbers: list[str]) -> None:
         """
         Flights from all confirmation numbers are retrieved. Then, any new
         flights are scheduled and any flights now longer found are removed.
@@ -49,7 +47,7 @@ class CheckInScheduler:
         webdriver = WebDriver(self)
         webdriver.set_headers()
 
-    def _get_flights(self, confirmation_number: str) -> List[Flight]:
+    def _get_flights(self, confirmation_number: str) -> list[Flight]:
         """Get all flights booked on a single reservation"""
         reservation_info = self._get_reservation_info(confirmation_number)
         bounds = reservation_info.get("bounds", [])
@@ -69,7 +67,7 @@ class CheckInScheduler:
 
         return flights
 
-    def _get_reservation_info(self, confirmation_number: str) -> Dict[str, Any]:
+    def _get_reservation_info(self, confirmation_number: str) -> dict[str, Any]:
         info = {
             "firstName": self.reservation_monitor.first_name,
             "lastName": self.reservation_monitor.last_name,
@@ -83,7 +81,7 @@ class CheckInScheduler:
         except RequestError as err:
             # Don't send a notification if flights have already been scheduled and all flights
             # from this reservation are old. This is how old flights are removed.
-            if len(self.flights) == 0 or err.southwest_code != FLIGHT_IN_PAST_CODE:
+            if len(self.flights) == 0 or err.southwest_code != SouthwestErrorCode.FLIGHT_IN_PAST:
                 logger.debug("Failed to retrieve reservation info. Error: %s. Exiting", err)
                 self.notification_handler.failed_reservation_retrieval(err, confirmation_number)
             else:
@@ -94,14 +92,14 @@ class CheckInScheduler:
         logger.debug("Successfully retrieved reservation information")
         return response["viewReservationViewPage"]
 
-    def _set_same_day_flight(self, flight: Flight, previous_flights: List[Flight]) -> None:
+    def _set_same_day_flight(self, flight: Flight, previous_flights: list[Flight]) -> None:
         for prev_flight in previous_flights:
             if flight.departure_time - prev_flight.departure_time <= timedelta(hours=24):
                 logger.debug("Flight is on the same day")
                 flight.is_same_day = True
                 break
 
-    def _update_scheduled_flights(self, flights: List[Flight]) -> None:
+    def _update_scheduled_flights(self, flights: list[Flight]) -> None:
         """
         Responsible for three tasks to update scheduled flights:
           1. Schedule check-ins for any new flights
@@ -127,8 +125,10 @@ class CheckInScheduler:
 
         self._remove_old_flights(flights)
 
-    def _schedule_flights(self, flights: List[Flight]) -> None:
+    def _schedule_flights(self, flights: list[Flight]) -> None:
         logger.debug("Scheduling %d flights for check-in", len(flights))
+
+        reacommodated_flights = []
         for flight in flights:
             checkin_handler = CheckInHandler(self, flight, self.reservation_monitor.lock)
             checkin_handler.schedule_check_in()
@@ -136,28 +136,33 @@ class CheckInScheduler:
             self.flights.append(flight)
             self.checkin_handlers.append(checkin_handler)
 
-        self.notification_handler.new_flights(flights)
+            if flight.can_be_reaccommodated:
+                reacommodated_flights.append(flight)
 
-    def _remove_old_flights(self, flights: List[Flight]) -> None:
+        self.notification_handler.new_flights(flights)
+        self.notification_handler.reaccommodated_flights(reacommodated_flights)
+
+    def _remove_old_flights(self, flights: list[Flight]) -> None:
         """Remove all scheduled flights that are not in the current flight list"""
         logger.debug("%d flights are currently scheduled. Removing old flights", len(self.flights))
 
-        twenty_four_hr_time = self.reservation_monitor.config.notification_24_hour_time
-
         # Copy the list because it can potentially change inside the loop
         for flight in self.flights[:]:
-            if flight not in flights:
-                flight_idx = self.flights.index(flight)
-                flight_time = flight.get_display_time(twenty_four_hr_time)
-                print(
-                    f"Flight from {flight.departure_airport} to {flight.destination_airport} on "
-                    f"{flight_time} is no longer scheduled. Stopping its check-in\n"
-                )  # Don't log as it has sensitive information
+            if flight in flights:
+                continue
 
-                self.checkin_handlers[flight_idx].stop_check_in()
+            # Print console messages with a 12-hour time format
+            flight_time = flight.get_display_time(False)
+            print(
+                f"Flight from {flight.departure_airport} to {flight.destination_airport} on "
+                f"{flight_time} is no longer scheduled. Stopping its check-in\n"
+            )  # Don't log as it has sensitive information
 
-                self.checkin_handlers.pop(flight_idx)
-                self.flights.pop(flight_idx)
+            flight_idx = self.flights.index(flight)
+            self.checkin_handlers[flight_idx].stop_check_in()
+
+            self.checkin_handlers.pop(flight_idx)
+            self.flights.pop(flight_idx)
 
         logger.debug(
             "Successfully removed old flights. %d flights are now scheduled", len(self.flights)

@@ -11,11 +11,14 @@ from lib.config import AccountConfig, ReservationConfig
 from lib.fare_checker import FareChecker
 from lib.notification_handler import NotificationHandler
 from lib.reservation_monitor import TOO_MANY_REQUESTS_CODE, AccountMonitor, ReservationMonitor
-from lib.utils import DriverTimeoutError, FlightChangeError, LoginError, RequestError
+from lib.utils import (
+    CheckFaresOption,
+    DriverTimeoutError,
+    FlightChangeError,
+    LoginError,
+    RequestError,
+)
 from lib.webdriver import WebDriver
-
-# This needs to be accessed to be tested
-# pylint: disable=protected-access
 
 
 @pytest.fixture
@@ -30,7 +33,6 @@ def mock_lock(mocker: MockerFixture) -> None:
 class TestReservationMonitor:
     @pytest.fixture(autouse=True)
     def _set_up_monitor(self, mock_lock: mock.Mock, mocker: MockerFixture) -> None:
-        # pylint: disable=attribute-defined-outside-init
         self.monitor = ReservationMonitor(ReservationConfig(), mock_lock)
         mocker.patch(
             "lib.reservation_monitor.get_current_time", return_value=datetime(1999, 12, 31)
@@ -103,7 +105,7 @@ class TestReservationMonitor:
         assert not should_exit
         mock_refresh_headers.assert_called_once()
         mock_schedule_reservations.assert_called_once_with(
-            [{"confirmationNumber": self.monitor.config.confirmation_number}]
+            [{"record_locator": self.monitor.config.confirmation_number}]
         )
         mock_check_flight_fares.assert_called_once()
 
@@ -142,7 +144,7 @@ class TestReservationMonitor:
         self, mocker: MockerFixture
     ) -> None:
         mock_process_reservations = mocker.patch.object(CheckInScheduler, "process_reservations")
-        reservations = [{"confirmationNumber": "Test1"}, {"confirmationNumber": "Test2"}]
+        reservations = [{"record_locator": "Test1"}, {"record_locator": "Test2"}]
 
         self.monitor._schedule_reservations(reservations)
 
@@ -153,16 +155,16 @@ class TestReservationMonitor:
     ) -> None:
         mock_fare_checker = mocker.patch("lib.reservation_monitor.FareChecker")
 
-        self.monitor.config.check_fares = False
+        self.monitor.config.check_fares = CheckFaresOption.NO
         self.monitor._check_flight_fares()
 
         mock_fare_checker.assert_not_called()
 
     def test_check_flight_fares_checks_fares_on_all_flights(self, mocker: MockerFixture) -> None:
-        test_flight = mocker.patch("lib.checkin_handler.Flight")
+        test_flight = mocker.patch("lib.flight.Flight")
         mock_check_flight_price = mocker.patch.object(FareChecker, "check_flight_price")
 
-        self.monitor.config.check_fares = True
+        self.monitor.config.check_fares = CheckFaresOption.SAME_FLIGHT
         self.monitor.checkin_scheduler.flights = [test_flight, test_flight]
         self.monitor._check_flight_fares()
 
@@ -172,12 +174,12 @@ class TestReservationMonitor:
     def test_check_flight_fares_catches_error_when_checking_fares(
         self, mocker: MockerFixture, exception: Exception
     ) -> None:
-        test_flight = mocker.patch("lib.checkin_handler.Flight")
+        test_flight = mocker.patch("lib.flight.Flight")
         mock_check_flight_price = mocker.patch.object(
             FareChecker, "check_flight_price", side_effect=[None, exception]
         )
 
-        self.monitor.config.check_fares = True
+        self.monitor.config.check_fares = CheckFaresOption.SAME_DAY
         self.monitor.checkin_scheduler.flights = [test_flight, test_flight]
         self.monitor._check_flight_fares()
 
@@ -193,6 +195,23 @@ class TestReservationMonitor:
         self.monitor._smart_sleep(datetime(1999, 12, 30, 12))
 
         mock_sleep.assert_called_once_with(12 * 60 * 60)
+
+    def test_smart_sleep_handles_negative_sleep_time(self, mocker: MockerFixture) -> None:
+        mock_sleep = mocker.patch("time.sleep")
+        mocker.patch(
+            "lib.reservation_monitor.get_current_time", return_value=datetime(1999, 12, 30, 12)
+        )
+
+        # Retrieval interval is 1 hour, but the time taken is more than an hour
+        self.monitor.config.retrieval_interval = 60 * 60
+        self.monitor._smart_sleep(datetime(1999, 12, 30, 10))
+
+        mock_sleep.assert_called_once_with(0)
+
+    def test_get_account_name_returns_correct_name(self) -> None:
+        self.monitor.first_name = "John"
+        self.monitor.last_name = "Doe"
+        assert self.monitor.get_account_name() == "John Doe"
 
     def test_stop_checkins_stops_all_checkins(self, mocker: MockerFixture) -> None:
         mock_checkin_handler = mocker.patch.object(CheckInHandler, "stop_check_in")
@@ -215,8 +234,8 @@ class TestReservationMonitor:
 class TestAccountMonitor:
     @pytest.fixture(autouse=True)
     def _set_up_monitor(self, mock_lock: mock.Mock, mocker: MockerFixture) -> None:
-        # pylint: disable=attribute-defined-outside-init
         self.monitor = AccountMonitor(AccountConfig(), mock_lock)
+        self.monitor.username = "test_user"
         mocker.patch(
             "lib.reservation_monitor.get_current_time", return_value=datetime(1999, 12, 31)
         )
@@ -248,6 +267,7 @@ class TestAccountMonitor:
     def test_get_reservations_skips_retrieval_on_driver_timeout(
         self, mocker: MockerFixture
     ) -> None:
+        mocker.patch("time.sleep")
         mocker.patch.object(WebDriver, "get_reservations", side_effect=DriverTimeoutError)
         mock_timeout_notif = mocker.patch.object(NotificationHandler, "timeout_during_retrieval")
 
@@ -260,6 +280,7 @@ class TestAccountMonitor:
     def test_get_reservations_skips_retrieval_on_too_many_requests_error(
         self, mocker: MockerFixture
     ) -> None:
+        mocker.patch("time.sleep")
         mocker.patch.object(
             WebDriver, "get_reservations", side_effect=LoginError("", TOO_MANY_REQUESTS_CODE)
         )
@@ -290,6 +311,14 @@ class TestAccountMonitor:
 
         assert new_reservations == reservations
         assert not skip_scheduling
+
+    def test_get_account_name_returns_name_when_set(self) -> None:
+        self.monitor.first_name = "John"
+        self.monitor.last_name = "Doe"
+        assert self.monitor.get_account_name() == "John Doe"
+
+    def test_get_account_name_returns_username_when_name_not_set(self) -> None:
+        assert self.monitor.get_account_name() == self.monitor.username
 
     def test_stop_monitoring_stops_checkins(self, mocker: MockerFixture) -> None:
         mock_stop_checkins = mocker.patch.object(AccountMonitor, "_stop_checkins")

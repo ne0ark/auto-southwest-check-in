@@ -45,6 +45,7 @@ def test_check_in(
         ],
     )
     mock_sleep = mocker.patch("time.sleep")
+    mocker.patch("time.monotonic", side_effect=[100, 1900, 2000, 3200])
 
     handler.first_name = "Garry"
     handler.last_name = "Lin"
@@ -91,10 +92,9 @@ def test_check_in(
         )
 
     handler.flight.is_same_day = same_day_flight
-    # pylint: disable-next=protected-access
     handler._set_check_in()
 
-    mock_sleep.assert_has_calls([call(1795), call(1195)])
+    mock_sleep.assert_has_calls([call(1800), call(1200)])
     handler.checkin_scheduler.refresh_headers.assert_called_once()
 
     mock_successful_checkin = handler.notification_handler.successful_checkin

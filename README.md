@@ -1,7 +1,7 @@
 ## Auto-Southwest Check-In
 A Python script that automatically checks you in to your Southwest flight. Additionally,
 the script can notify you if the price of your flight drops before departure
-(see [Fare Check](CONFIGURATION.md#fare-check)).
+(see [Check Fares](CONFIGURATION.md#check-fares)).
 
 This script can also log in to your Southwest account and automatically schedule check-ins as
 flights are scheduled.
@@ -23,7 +23,7 @@ information beforehand.
 ## Installation
 
 ### Prerequisites
-- [Python 3.8+]
+- [Python 3.9+]
 - [Pip]
 - [Any Chromium-based browser]
 
@@ -192,9 +192,9 @@ If you are running the script with Docker, the current workaround is to run the 
 </details>
 
 
-[Python 3.8+]: https://www.python.org/downloads/
+[Python 3.9+]: https://www.python.org/downloads/
 [Pip]: https://pip.pypa.io/en/stable/installation/
-[Any Chromium-based browser]: https://en.wikipedia.org/wiki/Chromium_(web_browser)#Active
+[Any Chromium-based browser]: https://en.wikipedia.org/wiki/Chromium_(web_browser)#Browsers_based_on_Chromium
 [Python virtual environment]: https://virtualenv.pypa.io/en/stable/
 [Docker]: https://www.docker.com/
 [Docker repository]: https://hub.docker.com/repository/docker/jdholtz/auto-southwest-check-in

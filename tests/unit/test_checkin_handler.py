@@ -8,20 +8,16 @@ from pytest_mock import MockerFixture
 from lib.checkin_handler import MAX_CHECK_IN_ATTEMPTS, CheckInHandler
 from lib.utils import AirportCheckInError, DriverTimeoutError, RequestError
 
-# This needs to be accessed to be tested
-# pylint: disable=protected-access
-
 
 class TestCheckInHandler:
     """Contains common tests between the CheckInHandler and the SameDayCheckInHandler"""
 
     @pytest.fixture(autouse=True)
     def _set_up_handler(self, mocker: MockerFixture) -> None:
-        test_flight = mocker.patch("lib.checkin_handler.Flight")
+        test_flight = mocker.patch("lib.flight.Flight")
         mock_checkin_scheduler = mocker.patch("lib.checkin_scheduler.CheckInScheduler")
         mock_lock = mocker.patch("multiprocessing.Lock")
 
-        # pylint: disable=attribute-defined-outside-init
         self.handler = CheckInHandler(mock_checkin_scheduler, test_flight, mock_lock)
         # This would usually be set in schedule_check_in, but that won't be run for every test
         self.handler.pid = 0
@@ -61,6 +57,15 @@ class TestCheckInHandler:
         mock_os_kill.assert_called_once_with(self.handler.pid, signal.SIGTERM)
         mock_os_waitpid.assert_called_once_with(self.handler.pid, 0)
 
+    def test_stop_check_in_handles_process_lookup_error(self, mocker: MockerFixture) -> None:
+        mock_os_kill = mocker.patch("os.kill", side_effect=ProcessLookupError)
+        mock_os_waitpid = mocker.patch("os.waitpid")
+
+        self.handler.stop_check_in()
+
+        mock_os_kill.assert_called_once_with(self.handler.pid, signal.SIGTERM)
+        mock_os_waitpid.assert_not_called()
+
     def test_set_check_in_correctly_sets_up_check_in_process(self, mocker: MockerFixture) -> None:
         self.handler.flight.departure_time = datetime(1999, 12, 31, 18, 29)
         mock_wait_for_check_in = mocker.patch.object(CheckInHandler, "_wait_for_check_in")
@@ -68,7 +73,7 @@ class TestCheckInHandler:
 
         self.handler._set_check_in()
 
-        mock_wait_for_check_in.assert_called_once_with(datetime(1999, 12, 30, 18, 28, 55))
+        mock_wait_for_check_in.assert_called_once_with(datetime(1999, 12, 30, 18, 29))
         mock_check_in.assert_called_once()
 
     def test_set_check_in_passes_on_keyboard_interrupt(self, mocker: MockerFixture) -> None:
@@ -89,6 +94,7 @@ class TestCheckInHandler:
         self, mocker: MockerFixture
     ) -> None:
         mock_sleep = mocker.patch("time.sleep")
+        mocker.patch("time.monotonic", side_effect=[100, 1900])
         mocker.patch(
             "lib.checkin_handler.get_current_time", return_value=datetime(1999, 12, 31, 18, 29, 59)
         )
@@ -105,6 +111,7 @@ class TestCheckInHandler:
         self, mocker: MockerFixture
     ) -> None:
         mock_sleep = mocker.patch("time.sleep")
+        mocker.patch("time.monotonic", side_effect=[100, 17500, 17600, 19400])
         mock_refresh_headers = mocker.patch.object(
             self.handler.checkin_scheduler, "refresh_headers"
         )
@@ -129,6 +136,7 @@ class TestCheckInHandler:
         self, mocker: MockerFixture
     ) -> None:
         mock_sleep = mocker.patch("time.sleep")
+        mocker.patch("time.monotonic", side_effect=[100, 17500, 17600, 19400])
         mocker.patch.object(
             self.handler.checkin_scheduler, "refresh_headers", side_effect=DriverTimeoutError
         )
@@ -147,13 +155,22 @@ class TestCheckInHandler:
         mock_sleep.assert_has_calls([mock.call(17400), mock.call(1800)])
         mock_timeout_before_checkin_notification.assert_called_once()
 
-    @pytest.mark.parametrize(["weeks", "expected_sleep_calls"], [(0, 0), (1, 1), (3, 2)])
+    @pytest.mark.parametrize(("weeks", "expected_sleep_calls"), [(0, 0), (1, 1), (3, 2)])
     def test_safe_sleep_sleeps_in_intervals(
         self, mocker: MockerFixture, weeks: int, expected_sleep_calls: int
     ) -> None:
-        mock_sleep = mocker.patch("time.sleep")
-
         total_sleep_time = weeks * 7 * 24 * 60 * 60
+
+        # Calculate monotonic times for the sleep intervals. Not perfect, but sufficient for testing
+        monotonic_times = [100]
+        for i in range(1, expected_sleep_calls):
+            monotonic_times.append(100 + i * 14 * 24 * 60 * 60)
+            monotonic_times.append(100 + i * 14 * 24 * 60 * 60)
+        monotonic_times.append(100 + total_sleep_time)
+
+        mock_sleep = mocker.patch("time.sleep")
+        mocker.patch("time.monotonic", side_effect=monotonic_times)
+
         self.handler._safe_sleep(total_sleep_time)
 
         assert mock_sleep.call_count == expected_sleep_calls

@@ -4,9 +4,7 @@ to contribute to this project.
 
 If you plan on making any changes that might not be fully agreed on, it is recommended to open an issue detailing your ideas first.
 
-Please submit all changes to the `develop` branch. This allows for separation between new changes and the latest stable release. When submitting a
-pull request, make sure to add the change/feature to the [Upcoming](CHANGELOG.md#upcoming) section of the changelog with a reference to the
-pull request (This can be done after submitting the PR or separately by me).
+Please submit all changes to the `develop` branch. This allows for separation between new changes and the latest stable release.
 
 ## Table of Contents
 - [Testing](#testing)
@@ -16,10 +14,10 @@ pull request (This can be done after submitting the PR or separately by me).
     * [Class Method Organization](#class-method-organization)
 
 ## Testing
-This project uses [pytest] to unit test the application. When adding/modifying the code, you may need to add a new test or modify an existing test.
+This project uses [pytest] to test the application. When adding/modifying the code, you may need to add a new test or modify an existing test.
 
 The goal of these tests is to provide 100% code coverage to increase the reliability of existing features and smoothly integrate new ones into the project.
-To learn about running unit tests for **Auto-Southwest Check-In**, visit the [Testing README](tests/README.md).
+To learn about running tests for **Auto-Southwest Check-In**, visit the [Testing README](tests/README.md).
 
 ## Coding Conventions
 Try to stay consistent with the current layout/format of the project. Please use your best judgement when following the conventions in this guide.
@@ -27,13 +25,13 @@ Try to stay consistent with the current layout/format of the project. Please use
 It is highly recommended for you to use [pre-commit] to ensure you are following these conventions.
 
 ### Linting
-[Flake8] is used to lint the Python code. When validating your code against flake8, use your best judgement to determine whether to fix
+[Ruff] is used to lint the Python code via `ruff check`. When validating your code against Ruff, use your best judgement to determine whether to fix
 the issue or disable the warning.
 
 [Codespell] is used to reduce typos in comments, strings, and documentation.
 
 ### Formatting
-[Black] is used to format all the Python code to a consistent style. Additionally, [isort] is used to provide a consistent ordering to imports.
+[Ruff] is used to format all the Python code to a consistent style via `ruff format`.
 
 It is also highly recommended to use an [EditorConfig] plugin for your code editor to maintain a consistent coding style for all project files.
 
@@ -48,8 +46,6 @@ From there, methods are ordered from top to bottom in the order they are used. U
 
 [pytest]: https://docs.pytest.org
 [pre-commit]: https://pre-commit.com
-[Flake8]: https://flake8.pycqa.org/en/latest
+[Ruff]: https://docs.astral.sh/ruff/
 [Codespell]: https://github.com/codespell-project/codespell
-[Black]: https://black.readthedocs.io/en/stable
-[isort]: https://pycqa.github.io/isort/
 [EditorConfig]: https://editorconfig.org/

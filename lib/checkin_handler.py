@@ -5,9 +5,8 @@ import signal
 import time
 from datetime import datetime, timedelta
 from multiprocessing import Lock, Process
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any
 
-from .flight import Flight
 from .log import get_logger
 from .utils import (
     AirportCheckInError,
@@ -19,9 +18,10 @@ from .utils import (
 
 if TYPE_CHECKING:
     from .checkin_scheduler import CheckInScheduler
+    from .flight import Flight
 
 # Type alias for JSON
-JSON = Dict[str, Any]
+JSON = dict[str, Any]
 
 CHECKIN_URL = "mobile-air-operations/v1/mobile-air-operations/page/check-in/"
 MANUAL_CHECKIN_URL = "https://mobile.southwest.com/check-in"
@@ -70,15 +70,15 @@ class CheckInHandler:
             # Wait so zombie (defunct) processes are not created
             logger.debug("Waiting for process with PID %d to be terminated", self.pid)
             os.waitpid(self.pid, 0)
-        except (ChildProcessError, PermissionError):
-            # Processes are handled differently in Windows
+        except (ChildProcessError, PermissionError, ProcessLookupError):
+            # Processes are handled differently in Windows or may already be terminated
             pass
 
         logger.debug("Process with PID %d successfully terminated", self.pid)
 
     def _set_check_in(self) -> None:
-        # Starts to check in five seconds early in case the Southwest server is ahead of your server
-        checkin_time = self.flight.departure_time - timedelta(days=1, seconds=5)
+        # Check-in is 24 hours before the flight departs
+        checkin_time = self.flight.departure_time - timedelta(days=1)
 
         try:
             self._wait_for_check_in(checkin_time)
@@ -117,19 +117,24 @@ class CheckInHandler:
 
         sleep_time = (checkin_time - current_time).total_seconds()
         logger.debug("Sleeping until check-in: %d seconds...", sleep_time)
-        time.sleep(sleep_time)
+        self._safe_sleep(sleep_time)
 
-    def _safe_sleep(self, total_sleep_time: int) -> None:
+    def _safe_sleep(self, total_sleep_time: float) -> None:
         """
         If the total sleep time is too long, an overflow error could occur.
         Therefore, the script will continuously sleep in two week periods
         to avoid this issue.
+
+        Also accounts for spurious wake-ups to ensure the total sleep time is respected.
         """
         two_weeks = 60 * 60 * 24 * 14
         while total_sleep_time > 0:
+            time_before = time.monotonic()
             sleep_time = min(total_sleep_time, two_weeks)
             time.sleep(sleep_time)
-            total_sleep_time -= sleep_time
+
+            time_elapsed = time.monotonic() - time_before
+            total_sleep_time -= time_elapsed
 
     def _check_in(self) -> None:
         """
@@ -167,7 +172,11 @@ class CheckInHandler:
         in until both flights have checked in.
         """
         logger.debug("Attempting to check in")
-        expected_flights = 2 if self.flight.is_same_day else 1
+
+        expected_flights = 1
+        if self.flight.is_same_day:
+            logger.debug("Checking in same-day flight")
+            expected_flights = 2
 
         attempts = 0
         while attempts < MAX_CHECK_IN_ATTEMPTS:
@@ -201,13 +210,13 @@ class CheckInHandler:
         }
         site = CHECKIN_URL + self.flight.confirmation_number
 
-        logger.debug("Making POST request to check in")
+        logger.debug("Making first POST request to check in")
+        # Don't randomly sleep during the check-in requests to have them go through more quickly
         response = make_request("POST", site, headers, info, random_sleep=False)
 
         info = response["checkInViewReservationPage"]["_links"]["checkIn"]
         site = f"mobile-air-operations{info['href']}"
 
-        logger.debug("Making POST request to check in")
-        # Don't randomly sleep during this request to have it go through more quickly
+        logger.debug("Making second POST request to check in")
         reservation = make_request("POST", site, headers, info["body"], random_sleep=False)
         return reservation
